@@ -1,143 +1,291 @@
 ---
 
 title: "HA - Data Science (modelling)"
-output: html_document
-
+author: "Gabor Kaposztassy"
+date: "6th March, 2016"
+output:
+  html_document:
+    fig_height: 4
+    fig_width: 6
+    toc: true
+    toc_depth: 3
+    
 ---
+
+
+# Data analysis project 
+-----------------------
 
 Data are from:
 <http://archive.ics.uci.edu/ml/datasets/Diabetes+130-US+hospitals+for+years+1999-2008#>
 Reference research:
 <http://www.hindawi.com/journals/bmri/2014/781670/>
 
-
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+Loading libraries and initialize H2O
+```{r , message=FALSE, warning=FALSE}
 library(dummies)
 library(data.table)
+library(reshape)
 library(dplyr)
 library(ggplot2)
 library(ROCR)
 library(pander)
-library(Rmisc)
 library(knitr)
 library(h2o)
 library(stats)
 library(randomForest)
+library(arm)
 library(rpart)
 library(gbm)
 
 h2o.init(max_mem_size = "4g", nthreads = -1)
 ```
 
-Exploratory Analysis
+
+## Exploratory Analysis
 --------------------
 
 ### Read data and quick look
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+
+We have a dataset about hospital visitors with several parameters and the task to predict whether the patient will be early readmitted (withing 30 days).
+The original aim of the documented analysis was to improve the reason of a specific test (HA1C) for diabetic disease that may lower the cost of the readmission.
+
+
+First let us look at the data.
+
+Our target (readmitted<30) is about 11% of all data and we have three variable with many NAs.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 # import data
-# temp <- tempfile()
-# download.file("http://archive.ics.uci.edu/ml/machine-learning-databases/00296/dataset_diabetes.zip",temp)
-# dt <- read.csv(unz(temp,"dataset_diabetes/diabetic_data.csv"),dec = ".",na.strings="?",stringsAsFactors = F)
+temp <- tempfile()
+download.file("http://archive.ics.uci.edu/ml/machine-learning-databases/00296/dataset_diabetes.zip",temp)
+dt <- read.csv(unz(temp,"dataset_diabetes/diabetic_data.csv"),dec = ".",na.strings="?",stringsAsFactors = F)
 #unlink(temp)
-dt <- read.csv("C:/Users/KG/Documents/CEU/DS proj/diabetic_data.txt",dec = ".",na.strings="?",stringsAsFactors = F)
 
+#dt <- read.csv("C:/Users/KG/Documents/CEU/DS proj/diabetic_data.txt",dec = ".",na.strings="?",stringsAsFactors = F)
 
-df <- read.csv("C:/Users/KG/Documents/CEU/DS proj/diabetic_data.txt",dec = ".",na.strings="?",stringsAsFactors = T)
+#set.seed(123)
+#N <- nrow(dt)
+#idx_samp <- sample(1:N,N/5)
+#dt <- dt[idx_samp,]
 
+#df <- read.csv("C:/Users/KG/Documents/CEU/DS proj/diabetic_data.txt",dec = #".",na.strings="?",stringsAsFactors = T)
 
-knitr::kable(summary(df))
-knitr::kable(str(df))
+kable(summary(dt))
 
+dt$target<- as.numeric(dt$readmitted=='<30')
 
-pander(table(dt$readmitted, dt$A1Cresult=='None'))
+```
 
-dt %>% group_by(readmitted) %>% summarize(n = n()) %>% mutate(pc = n/sum(n)*100)
+Target variable
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+dt %>% group_by(readmitted) %>% summarize(n = n()) %>% mutate("%" = n/sum(n)*100)
+```
 
+NA ratio of variables
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+dt %>% sapply(function(x) z=mean(is.na(x))*100) %>% as.data.frame
 ```
 
 ### Getting know main predictor variables
 
+By a preceding analysis I present the predictor variables in their importance order.
 
-```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width = 10, fig.height = 10}
-g0a<-ggplot(dt,aes(x=medical_specialty,fill=readmitted)) + geom_bar(position = 'fill')+coord_flip()+ ylab("%")+
-    theme(legend.position="none")
-g0b<-  ggplot(dt,aes(x=medical_specialty,fill=readmitted)) + geom_bar()+coord_flip()+    
-  theme(axis.text.y=element_blank(),axis.title.y=element_blank())
+###*Medical specialty*
 
-multiplot(g0a,g0b,cols=2)
-```
+Integer identifier of a specialty of the admitting physician with 73 unique value end 49% NA.
+The distribution of physicians within target (1) and others (0). 
 
-```{r echo=FALSE, message=FALSE, warning=FALSE, fig.width = 10, fig.height = 5}
+```{r, echo=FALSE, message=FALSE, warning=FALSE, error=FALSE}
+#length(unique(dt$medical_specialty))
 
-g1a<-ggplot(dt,aes(x=number_inpatient,fill=readmitted)) + geom_bar()
-g1b<-ggplot(dt,aes(x=number_inpatient,fill=readmitted)) +
-      geom_bar(position = 'fill') + ylab("%")
-g2a<-ggplot(dt,aes(x=time_in_hospital,fill=readmitted)) + geom_bar()
-g2b<-ggplot(dt,aes(x=time_in_hospital,fill=readmitted)) +
-      geom_bar(position = 'fill') + ylab("%")
-g3a<-ggplot(dt,aes(x=age,fill=readmitted)) + geom_bar()
-g3b<-ggplot(dt,aes(x=age,fill=readmitted)) +
-      geom_bar(position = 'fill') + ylab("%")
-g4a<-ggplot(dt,aes(x=num_medications,fill=readmitted)) + geom_bar()
-g4b<-ggplot(dt,aes(x=num_medications,fill=readmitted)) +
-      geom_bar(position = 'fill') + ylab("%")
-g5a<-ggplot(dt,aes(x=payer_code,fill=readmitted)) + geom_bar()
-g5b<-ggplot(dt,aes(x=payer_code,fill=readmitted)) +
-      geom_bar(position = 'fill') + ylab("%")
-
-multiplot(g1a,g1b,g2a,g2b, cols=2)
-multiplot(g3a,g3b,g4a,g4b, cols=2)
-multiplot(g5a,g5b)
+pander(
+  dt %>% group_by(target, medical_specialty) %>% 
+  summarize(n = n()) %>% mutate("%" = n/sum(n)*100) %>% as.data.frame %>%
+  cast(medical_specialty ~ target) %>% arrange(desc(`1`), desc(`0`)),
+  justify = 'center')
 
 ```
 
+###*Number of lab procedures*
 
-### Feature engeneering
+Number of lab tests performed during the encounter with no NA but some extreme value.
 
-I followed the rule of thumb to convert (cathegory) variables to dummies (NAs as well) but I also left the original data with the target dummy.
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 
-I used the cathegory info on on diagn data:
+summary(dt$num_lab_procedures)
 
-“circulatory” for icd9: 390–459, 785, “digestive” for icd9: 520–579, 787, “genitourinary” for icd9: 580–629, 788, “diabetes” for icd9: 250.xx, “injury” for icd9: 800–999, “musculoskeletal” for icd9: 710–739, “neoplasms” for icd9: 140–239, “respiratory” for icd9: 460–519, 786, and “other”
+ggplot(dt) + geom_histogram(aes(x = num_lab_procedures),binwidth = 1) +
+  facet_grid(target~., scales = "free") + xlim(c(0,100)) + theme_minimal()
 
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+```
+
+###*Number of inpatient*
+
+Number of inpatient visits of the patient in the year preceding the encounter.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+summary(dt$number_inpatient)
+
+ggplot(dt) + geom_bar(aes(x = number_inpatient)) +
+  facet_grid(target~., scales = "free") +xlim(c(0,15))+ theme_minimal()
+
+```
+
+###*Time in hospital*
+
+Integer number of days between admission and discharge.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+summary(dt$time_in_hospital)
+
+ggplot(dt) + geom_bar(aes(x = time_in_hospital)) +
+  facet_grid(target~., scales = "free") + theme_minimal()
+
+```
+
+###*Age*
+
+Nominal variable grouped in 10-year intervals: 0, 10), 10, 20), …, 90, 100).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+table(dt$age)
+
+ggplot(dt) + geom_bar(aes(x = age)) +
+  facet_grid(target~., scales = "free") + theme_minimal()
+
+```
+
+###*Number of medications*
+  
+Number of distinct generic names administered during the encounter.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+summary(dt$num_medications)
+
+ggplot(dt) + geom_histogram(aes(x = num_medications),binwidth = 1) +
+  facet_grid(target~., scales = "free") + theme_minimal()
+
+```
+
+###*Payer code*
+  
+Integer identifier corresponding to 18 distinct values (including self-pay and other types) with 40% NA.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+length(unique(dt$payer_code))
+
+dt %>% group_by(payer_code) %>% 
+  summarize(n = n()) %>% mutate("%" = round(100*n/sum(n),1)) %>% as.data.frame
+
+ggplot(dt) + geom_bar(aes(x = payer_code)) +
+  facet_grid(target~., scales = "free") + theme_minimal()
+
+```
+
+###*Diagnosis 1,2,3*
+  
+The primary, secondary and alternative secondary diagnosis (coded as first three digits of ICD9) preceeding the encounter. Unique values are over 700, this needs feature engeneering.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+length(unique(dt$diag_1))
+length(unique(dt$diag_2))
+length(unique(dt$diag_3))
+
+```
+
+###*Admission source*
+
+Integer identifier corresponding to 17 distinct values, for example, physician referral, emergency room, and transfer from a hospital
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+#length(unique(dt$admission_source_id))
+
+dt %>% group_by(admission_source_id) %>% 
+  summarize(n = n()) %>% mutate("%" = round(100*n/sum(n),1)) %>% as.data.frame
+
+ggplot(dt) + geom_bar(aes(x = as.factor(as.numeric(admission_source_id)))) + facet_grid(target~., scales = "free") + theme_minimal()
+
+```
+
+
+###*Discharge disposition*
+
+Integer identifier corresponding to 26 distinct values, for example, discharged to home, expired, and not available.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+#length(unique(dt$discharge_disposition_id))
+
+dt %>% group_by(discharge_disposition_id) %>% 
+  summarize(n = n()) %>% mutate("%" = round(100*n/sum(n),1)) %>% as.data.frame
+
+ggplot(dt) + geom_bar(aes(x = as.factor(as.numeric(discharge_disposition_id)))) + facet_grid(target~., scales = "free") + theme_minimal()
+
+```
+
+###*A1C test result*
+
+Indicates the range of the result or if the test was not taken. Values: “>8” if the result was greater than 8%, “>7” if the result was greater than 7% but less than 8%, “normal” if the result was less than 7%, and “none” if not measured.
+It seems to be significant to the outcome. A1c test was performed in 17% of encounters. Basically the early readmittance is some higher in the case of no A1c test.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+
+a<-dt %>% group_by(target, A1Cresult) %>% summarize(n = n())
+b<-as.data.frame(cast(a,A1Cresult ~ target))
+b$`%` <- b$`1`/(b$`0`+b$`1`)
+b
+
+```
+
+
+
+## Feature engeneering
+
+I followed the rule of thumb to convert (cathegory) variables to dummies (NAs as well) but I also left the original data frame with the target dummy as well to try the algorithms on it.
+
+I used the cathegory info on diagnosis data:
+
+"circulatory" for icd9: 390-459, 785, "digestive" for icd9: 520-579, 787, "genitourinary" for icd9: 580-629, 788, "diabetes" for icd9: 250.xx, "injury" for icd9: 800-999, "musculoskeletal" for icd9: 710-739, "neoplasms" for icd9: 140-239, "respiratory" for icd9: 460-519, 786, and "other".
+
+And I dropped variables with one unique values, and I kept weight in spite of 96% NA, but I coded it as dummy. I dropped only 3 rows due to invalid gender.
+
+```{r, message=FALSE, warning=FALSE}
+
+fdiag <- function(column) {
+  sapply(column, function(x) {
+    x = as.character(x)
+    res = "NA"
+    if(!is.na(x)){
+      res = "other"
+      if ((x>='390' & x<='459') | x =='785') {res = 'circulatory'}
+      if ((x>='520' & x<='579') | x =='787') {res = 'digestive'}
+      if ((x>='580' & x<='629') | x =='788') {res = 'genitourinary'}
+      if (x %like% '250') {res = 'diabetes'}
+      if (x>='800' & x<='999') {res = 'injury'}
+      if (x>='710' & x<='739') {res = 'musculoskeletal'}
+      if (x>='140' & x<='239') {res = 'neoplasms'}
+      if ((x>='460' & x<='519') | x =='786') {res = 'respiratory'}
+      }
+    res
+  }, USE.NAMES = F, simplify = T)
+}
+
 
 dt <- dt %>% mutate(
     admission_type_id = as.character(admission_type_id),
     discharge_disposition_id = as.character(discharge_disposition_id),
     admission_source_id = as.character(admission_source_id),
-    diag_1 = as.character(diag_1),
-    diag_2 = as.character(diag_2),
-    diag_3 = as.character(diag_3),
-    d1_diabetes = as.numeric(diag_1 %like% '250'),
-    d1_circulatory = as.numeric((diag_1>='390' & diag_1<='459') | diag_1 =='785'),
-    d1_digestive = as.numeric((diag_1>='520' & diag_1<='579') | diag_1 =='787'),
-    d1_genitourinary = as.numeric((diag_1>='580' & diag_1<='629') | diag_1 =='788'),
-    d1_injury = as.numeric(diag_1>='800' & diag_1<='999'),
-    d1_musculoskeletal = as.numeric(diag_1>='710' & diag_1<='739'),
-    d1_neoplasms = as.numeric(diag_1>='140' & diag_1<='239'),
-    d1_respiratory = as.numeric((diag_1>='460' & diag_1<='519') | diag_1 =='786'),
-    d1_other = as.numeric(diag_1 > '999'),
-    #
-    d2_diabetes = as.numeric(diag_2 %like% '250'),
-    d2_circulatory = as.numeric((diag_2>='390' & diag_2<='459') | diag_2 =='785'),
-    d2_digestive = as.numeric((diag_2>='520' & diag_2<='579') | diag_2 =='787'),
-    d2_genitourinary = as.numeric((diag_2>='580' & diag_2<='629') | diag_2 =='788'),
-    d2_injury = as.numeric(diag_2>='800' & diag_2<='999'),
-    d2_musculoskeletal = as.numeric(diag_2>='710' & diag_2<='739'),
-    d2_neoplasms = as.numeric(diag_2>='140' & diag_2<='239'),
-    d2_respiratory = as.numeric((diag_2>='460' & diag_2<='519') | diag_2 =='786'),
-    d2_other = as.numeric(diag_2 > '999'),
-    #
-    d3_diabetes = as.numeric(diag_3 %like% '250'),
-    d3_circulatory = as.numeric((diag_3>='390' & diag_3<='459') | diag_3 =='785'),
-    d3_digestive = as.numeric((diag_3>='520' & diag_3<='579') | diag_3 =='787'),
-    d3_genitourinary = as.numeric((diag_3>='580' & diag_3<='629') | diag_3 =='788'),
-    d3_injury = as.numeric(diag_3>='800' & diag_3<='999'),
-    d3_musculoskeletal = as.numeric(diag_3>='710' & diag_3<='739'),
-    d3_neoplasms = as.numeric(diag_3>='140' & diag_3<='239'),
-    d3_respiratory = as.numeric((diag_3>='460' & diag_3<='519') | diag_3 =='786'),
-    d3_other = as.numeric(diag_3 > '999')
+    diag1 = fdiag(diag_1),
+    diag2 = fdiag(diag_2),
+    diag3 = fdiag(diag_3)
 )    
 
 dt$diag_1 <- NULL
@@ -147,16 +295,25 @@ dt$examide <- NULL
 dt$citoglipton <- NULL
 dt$encounter_id <- NULL
 dt$patient_nbr <- NULL
+dt$A1Ctest <- 1-as.numeric(dt$A1Cresult =='None')
+dt$A1Cresult <- NULL
+
+# target back to the end!!!
+dt$target <- NULL
 dt$target<- as.numeric(dt$readmitted=='<30')
 dt$readmitted <- NULL
 
-dd <-dummy.data.frame(dt)
 
-dd[is.na(dd)]<-0
-summary(dd)
-# randomForest likes factors more
+dt[is.na(dt)]<-"x"
+dt <- dt[dt$gender != "Unknown/Invalid", ]
+df <- dt
+df[, lapply(df, class) == "character"] <- lapply(df[, lapply(df, class) == "character"], as.factor)
+
+dd <- dummy.data.frame(dt)
+
 ddf <- as.data.frame(lapply(dd[,names(dd)], factor))
 ddf <- ddf %>% mutate(
+  time_in_hospital = as.numeric(time_in_hospital),
   num_lab_procedures = as.numeric(num_lab_procedures),
   num_procedures = as.numeric(num_procedures),
   num_medications = as.numeric(num_medications),
@@ -166,17 +323,18 @@ ddf <- ddf %>% mutate(
   number_diagnoses = as.numeric(number_diagnoses)
 )
 
+# this way did not work together with randomForest
+# ddf[,!names(dd)%like%"num" & names(dd)!="time_in_hospital"] <- as.data.frame(lapply(dd[,!names(dd)%like%"num" & names(dd)!="time_in_hospital"], factor))
 
 ```
 
 
-### Modelling
+##Modelling
 
 I tried the following R modells:
-linear regression (Lin), Decision tree (Dec), Random Forest (RF),
-Gradient Boost Method  (GBM) with some parameters. After this I tried out H2O models as well.
+Logistic regression, Classification Decision tree, Random Forest, Gradient Boost Method. After this I tried out H2O models with similar and changed parameters as well. GLM and RandomForest needed dummized varibles, and RF liked factors much more, but othe algorithms could deal without dummies.
 
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
 
 set.seed(123)
 N <- nrow(dt)
@@ -184,173 +342,349 @@ idx_train <- sample(1:N,N/2)
 idx_valid <- sample(base::setdiff(1:N, idx_train), N/4)
 idx_test <- base::setdiff(base::setdiff(1:N, idx_train),idx_valid)
 
-# from df1?
+dd_train <- dd[idx_train,]
+dd_valid <- dd[idx_valid,]
+dd_test  <- dd[idx_test,]
+
+ddf_train <- ddf[idx_train,]
+ddf_valid <- ddf[idx_valid,]
+ddf_test  <- ddf[idx_test,]
+
+df_train <- df[idx_train,]
+df_test  <- df[idx_test,]
+df_valid <- df[idx_valid,]
+
 d_train <- dt[idx_train,]
-d_valid <- dt[idx_valid,]
 d_test  <- dt[idx_test,]
+d_valid <- dt[idx_valid,]
 
-dftr <- ddf[idx_train,]
-dfte <- ddf[idx_test,]
-
-idx_prob <- sample(1:N,N/10)
-df1 <- ddf[idx_prob,]
-N <- nrow(df1)
-idx <- sample(1:N, 0.6*N)
-p_train <- df1[idx,]
-p_test <- df1[-idx,]
-
-dd1 <- dd[idx_prob,]
-N <- nrow(dd1)
-idx <- sample(1:N, 0.6*N)
-n_train <- dd1[idx,]
-n_test <- dd1[-idx,]
 ```
 
 
-GLM
+### GLM
 
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+First I run a linear regression to see quickly the prediction power of the variables, and check if the A1C test has any significant effect to the early readmission.
+
+```{r, message=FALSE, warning=FALSE}
 
 # glm needs dummies
-lin <- glm(target~.,p_train,family=gaussian())
 
-kable(summary(lin))
 
-pred_lin <- prediction(fitted(lin, p_test),p_train$target)
+glmtim <- Sys.time()
+lgb <- bayesglm(target~.,dd_train,family="binomial")
+glmtim <- Sys.time() - glmtim
 
+# this does not work due to perfect separation error...
+#lgb <- glm(target~.,dd_train,family="binomial")
+summary(lgb)
+
+pred_lgb <- prediction(as.data.frame(predict(lgb,dd_test))[,1],dd_test$target)
+
+# MSE
+glmmse <- mean(as.data.frame(predict(lgb,dd_test))[,1]-dd_test$target)^2
 # ROC
-plot(performance(pred_lin,"tpr","fpr"), main="ROC curve - Lin")
+plot(performance(pred_lgb,"tpr","fpr"), main="ROC curve - Logit")
 # lift chart
-plot(performance(pred_lin,"lift","rpp"), main="lift curve")
+plot(performance(pred_lgb,"lift","rpp"), main="Lift curve")
 #AUC
-as.numeric(performance(pred_lin,"auc")@y.values)
+glmauc <- as.numeric(performance(pred_lgb,"auc")@y.values)
+
+lgb
+pander(c(mse=glmmse,auc=glmauc,time=glmtim))
 
 ```
 
 
-GLM - logit
+### Decision tree
 
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+```{r, message=FALSE, warning=FALSE}
 
-# glm needs dummies
-logr <- glm(target~age,family=binomial(),data=d_train)
+dectim <- Sys.time()
+dect <- rpart(target ~ ., data = df_train, control = rpart.control(cp = 0))
+dectim <- Sys.time() - dectim
 
-summary(logr)
+#summary(dect)
 
-pred_log <- prediction(fitted(logr, n_test),n_train$target)
-
-# ROC
-plot(performance(pred_log,"tpr","fpr"), main="ROC curve - Lin")
-# lift chart
-plot(performance(pred_log,"lift","rpp"), main="lift curve")
-#AUC
-as.numeric(performance(pred_log,"auc")@y.values)
-
-```
-
-
-
-Random Forest
-
-```{r echo=FALSE, message=FALSE, warning=FALSE}
-
-# RF needs factors
-rf <- randomForest(target~., data=p_train, ntree = 200, importance=T)
-varImpPlot(rf, type = 2)
-?randomForest
-pred_rf <- prediction(predict(rf, p_test, type = "prob")[,"1"],p_test$target)
-
-hist((predict(rf, p_test, type = "prob"))[,"1"])
-
-# ROC
-plot(performance(pred_rf,"tpr","fpr"), main="ROC curve")
-# lift chart
-plot(performance(pred_rf,"lift","rpp"), main="lift curve")
-#AUC
-as.numeric(performance(pred_rf,"auc")@y.values)
-
-```
-
-
-Decision tree
-
-```{r echo=FALSE, message=FALSE, warning=FALSE}
-
-# decision tree sima fa
-
-dect <- rpart(target ~ ., data = p_trin, control = rpart.control(cp = 0))
-
-dect$variable.importance
+as.data.frame(dect$variable.importance)
 
 plot(dect, uniform = TRUE, compress = TRUE)
 
-pred_dec <- prediction(predict(dect, p_test)[,"1"], p_test$target)
+pred_dec <- prediction(as.data.frame(predict(dect, df_test)), df_test$target)
+
+# MSE
+decmse <- mean((as.data.frame(predict(dect, df_test))[,1]- df_test$target)^2)
 # ROC
 plot(performance(pred_dec,"tpr","fpr"), main="ROC curve")
 # lift chart
-plot(performance(pred_dec,"lift","rpp"), main="lift curve")
+plot(performance(pred_dec,"lift","rpp"), main="Lift curve")
 #AUC
-as.numeric(performance(pred_dec,"auc")@y.values)
+decauc <- as.numeric(performance(pred_dec,"auc")@y.values)
+
+pander(c(mse=decmse,auc=decauc,time=dectim))
 
 ```
 
+### Random Forest
 
-GBM
+```{r, message=FALSE, warning=FALSE}
 
-```{r echo=FALSE, message=FALSE, warning=FALSE}
+# RF needs factors
+rftim <- Sys.time()
+rf <- randomForest(target~., data = ddf_train, ntree = 100, importance=T)
+rftim <- Sys.time() - rftim
 
-gbm1 <- gbm(target ~ ., data = p_train, distribution = "bernoulli",
+as.data.frame(varImpPlot(rf, type = 1))
+
+pred_rf <- prediction(predict(rf, ddf_test, type = "prob")[,"1"], ddf_test$target)
+
+# MSE
+rfmse <- mean(as.data.frame(predict(rf, ddf_test, type = "prob")[,"1"])[,1] - (as.numeric(ddf_test$target)-1))^2
+# ROC
+plot(performance(pred_rf,"tpr","fpr"), main="ROC curve")
+# lift chart
+plot(performance(pred_rf,"lift","rpp"), main="Lift curve")
+#AUC
+rfauc <- as.numeric(performance(pred_rf,"auc")@y.values)
+
+rf
+pander(c(mse=rfmse,auc=rfauc,time=rftim))
+
+```
+
+### GBM with cross validation
+
+```{r, message=FALSE, warning=FALSE}
+
+gbmtim <- Sys.time()
+gbm <- gbm(target ~ ., data = df_train, distribution = "bernoulli",
           n.trees = 100, interaction.depth = 10, shrinkage = 0.01, cv.folds = 5)
-  
-#best.iter <- gbm.perf(gbm1,method="OOB")
-#(gbm1,method="cv")
-#print(best.iter)
+gbmtim <- Sys.time() - gbmtim
 
-pred_gbm <- prediction(predict(gbm1,p_test,100),p_test$target)
+pred_gbm <- prediction(predict(gbm,df_test,100),df_test$target)
+
+# MSE
+gbmmse <- mean((as.data.frame(predict(gbm, df_test,100)) - dd_test$target)^2)
 # ROC
 plot(performance(pred_gbm,"tpr","fpr"), main="ROC curve")
 # lift chart
-plot(performance(pred_gbm,"lift","rpp"), main="lift curve")
+plot(performance(pred_gbm,"lift","rpp"), main="Lift curve")
 #AUC
-as.numeric(performance(pred_gbm,"auc")@y.values)
+gbmauc <- as.numeric(performance(pred_gbm,"auc")@y.values)
 
-
+gbm
+pander(c(mse=gbmmse,auc=gbmauc,time=gbmtim))
 
 ```
 
-### Modelling with H2O
+## Modelling with H2O
 
-```{r echo=FALSE, message=FALSE, include=FALSE, cache=FALSE}
+```{r, echo=FALSE, message=FALSE, warning=FALSE }
 
-idx_prob <- sample(1:N,N/10)
-df1 <- ddf[idx_prob,]
-N <- nrow(df1)
-idx <- sample(1:N, 0.6*N)
-p_train <- df1[idx,]
-p_test <- df1[-idx,]
-str(p_train[280:288])
-str(p_train)
-
-h_train <- as.h2o(p_train)
+h_train <- as.h2o(d_train)
 h_valid <- as.h2o(d_valid)
-h_test <- as.h2o(p_test)
+h_test <- as.h2o(d_test)
+
+```
+
+```{r, eval=FALSE, message=FALSE, warning=FALSE }
+
+h_train <- as.h2o(d_train)
+h_valid <- as.h2o(d_valid)
+h_test <- as.h2o(d_test)
 
 ```
 
 ### Random forest
 
-```{r echo=FALSE, message=FALSE, include=FALSE, cache=FALSE}
+```{r, message=FALSE, warning=FALSE }
 
-system.time({
-  hrf1 <- h2o.randomForest(x = 1:287, y = 288, 
+hrftim <- Sys.time()
+  hrf <- h2o.randomForest(x = 1:45, y = 46, 
             training_frame = h_train, 
-            mtries = -1, ntrees = 500, max_depth = 20, nbins = 200)
-})
+            mtries = -1, ntrees = 100, max_depth = 20, nbins = 50
+            )
+hrftim <- Sys.time() - hrftim
 
-hrf1
-h2o.auc(hrf1) 
-h2o.auc(h2o.performance(hrf1, h_test))
+pred_hrf <- prediction(as.data.frame(h2o.predict(hrf, h_test)$predict),as.data.frame(h_test$target))
+
+# MSE
+hrfmse <- h2o.mse(h2o.performance(hrf, h_test))
+# ROC
+plot(performance(pred_hrf,"tpr","fpr"), main="ROC curve")
+# lift chart
+plot(performance(pred_hrf,"lift","rpp"), main="Lift curve")
+#AUC
+hrfauc <- as.numeric(performance(pred_hrf,"auc")@y.values)
+
+hrf
+pander(c(mse=hrfmse,auc=hrfauc,time=hrftim))
+```
+
+
+### GBM with cross validation
+
+```{r, message=FALSE, warning=FALSE }
+
+hgbmtim <- Sys.time()
+hgbm <- h2o.gbm(x = 1:45, y = 46, 
+          training_frame = h_train, 
+          max_depth = 20, ntrees = 100, learn_rate = 0.01, nbins = 50,
+          nfolds = 5,
+          stopping_rounds = 3, stopping_tolerance = 1e-3)
+hgbmtim <- Sys.time() - hgbmtim
+
+pred_hgbm <- prediction(as.data.frame(h2o.predict(hgbm, h_test)$predict),as.data.frame(h_test$target))
+
+# MSE
+hgbmmse <- h2o.mse(h2o.performance(hgbm, h_test))
+# ROC
+plot(performance(pred_hgbm,"tpr","fpr"), main="ROC curve")
+# lift chart
+plot(performance(pred_hgbm,"lift","rpp"), main="Lift curve")
+#AUC
+hgbmauc <- as.numeric(performance(pred_hgbm,"auc")@y.values)
+
+hgbm
+pander(c(mse=hgbmmse,auc=hgbmauc,time=hgbmtim))
 
 ```
+
+
+
+### GBM with grid search
+
+```{r, message=FALSE, warning=FALSE }
+hgmbg <- h2o.grid("gbm", x = 1:45, y = 46,
+            training_frame = h_train, validation_frame = h_valid,
+            hyper_params = list(ntrees = c(50,100,500),
+                                max_depth = c(5,10,20),
+                                learn_rate = c(0.01,0.1),
+                                nbins = 200),
+            stopping_rounds = 5, stopping_tolerance = 1e-3)
+
+
+result <-
+do.call(rbind, lapply(hgmbg@model_ids, function(m_id) {
+  mm <- h2o.getModel(m_id)
+  hyper_params <- mm@allparameters
+  data.frame(m_id = m_id, 
+             mse = h2o.mse(mm, test=TRUE),
+             #auc = h2o.auc(mm, test=TRUE),
+             #auc = h2o.performance(mm, h_test)@metrics$AUC,
+             ntrees = hyper_params$ntrees,
+             max_depth = hyper_params$max_depth,
+             learn_rate = hyper_params$learn_rate )
+})) %>% arrange(mse)
+
+pander(result[,-1 ])
+
+```
+
+### Neural network
+
+```{r, message=FALSE, warning=FALSE }
+
+hnntim <- Sys.time()
+hnn <- h2o.deeplearning(x = 1:45, y = 46,
+          training_frame = h_train, validation_frame = h_valid,
+          activation = "Rectifier", hidden = c(200,200), epochs = 100,
+          stopping_rounds = 3, stopping_tolerance = 0)
+hnntim <- Sys.time() - hnntim
+
+pred_hnn <- prediction(as.data.frame(h2o.predict(hnn, h_test)$predict),as.data.frame(h_test$target))
+
+# MSE
+hnnmse <- h2o.mse(h2o.performance(hnn, h_test))
+# ROC
+plot(performance(pred_hnn,"tpr","fpr"), main="ROC curve")
+# lift chart
+plot(performance(pred_hnn,"lift","rpp"), main="Lift curve")
+#AUC
+hnnauc <- as.numeric(performance(pred_hnn,"auc")@y.values)
+
+hnn
+pander(c(mse=hnnmse,auc=hnnauc,time=hnntim))
+
+```
+
+
+### Neural network with regularization (L1, L2, dropout)
+
+```{r, message=FALSE, warning=FALSE }
+
+hnnrtim <- Sys.time()
+hnnr <- h2o.deeplearning(x = 1:45, y = 46, 
+          training_frame = h_train, validation_frame = h_valid,
+          activation = "RectifierWithDropout", hidden = c(200,200), epochs = 100,
+          input_dropout_ratio = 0.2, hidden_dropout_ratios = c(0.2,0.2),
+          l1 = 1e-4, l2 = 1e-4,
+          stopping_rounds = 3, stopping_tolerance = 0)
+hnnrtim <- Sys.time() - hnnrtim
+
+pred_hnnr <- prediction(as.data.frame(h2o.predict(hnnr, h_test)$predict),as.data.frame(h_test$target))
+
+# MSE
+hnnrmse <- h2o.mse(h2o.performance(hnnr, h_test))
+# ROC
+plot(performance(pred_hnnr,"tpr","fpr"), main="ROC curve")
+# lift chart
+plot(performance(pred_hnnr,"lift","rpp"), main="Lift curve")
+#AUC
+hnnrauc <- as.numeric(performance(pred_hnnr,"auc")@y.values)
+
+hnnr
+pander(c(mse=hnnrmse,auc=hnnrauc,time=hnnrtim))
+
+```
+
+
+
+## Compaison of the models
+
+The R models performed better (GBM, Logit) then H2O ones in prediction accuracy. Among H2O models the best performing was Deep Learning.
+But for this purpose the Decision tree seemed good choice but Logit overperformed it.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE }
+models <- 
+  data.frame(Model = c("Logit", 
+                       "ClassTree", 
+                       "RandomForest", 
+                       "GBM /w cv", 
+                       "H2O RandomForest", 
+                       "H2O GBM /w cv", 
+                       "DeapLearn", 
+                       "DeapLearn /w reg" 
+                       ),
+  MSE = c(glmmse,
+          decmse,
+          rfmse,
+          gbmmse,
+          hrfmse,
+          hgbmmse,
+          hnnmse,
+          hnnrmse),
+  AUC = c(glmauc,
+          decauc,
+          rfauc,
+          gbmauc,
+          hrfauc,
+          hgbmauc,
+          hnnauc,
+          hnnrauc),
+  Time= c(glmtim,
+          dectim,
+          rftim,
+          gbmtim,
+          hrftim,
+          hgbmtim,
+          hnntim,
+          hnnrtim))
+  
+
+pander(models)
+
+```
+
+
 
 
